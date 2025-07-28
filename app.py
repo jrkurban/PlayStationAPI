@@ -52,9 +52,6 @@ def get_latest_price(game_id):
             return jsonify({"error": "Bu oyun için fiyat bilgisi bulunamadı."}), 404
 
         return json_util.dumps(latest_price_doc), 200, {'Content-Type': 'application/json'}
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
 
 @app.route("/api/games/discounted", methods=["GET"])
 def get_discounted_games():
