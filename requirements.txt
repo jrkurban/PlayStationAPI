@@ -1,5 +1,25 @@
-Flask
-pymongo
-python-dotenv
-Flask-Cors
-gunicorn
+# Web framework
+Flask==3.0.3
+
+# MongoDB ile iletişim kurmak için resmi sürücü
+pymongo==4.7.3
+
+# .env dosyasından ortam değişkenlerini okumak için
+python-dotenv==1.0.1
+
+# Uygulamanıza dışarıdan (tarayıcı, mobil uygulama) erişim izni vermek için
+Flask-Cors==4.0.1
+
+# Üretim ortamları için profesyonel Python web sunucusu
+gunicorn==22.0.0
+
+# İstek-cevap (request-response) işlemleri için
+Werkzeug==3.0.3
+
+# Diğer temel bağımlılıklar
+blinker==1.8.2
+click==8.1.7
+dnspython==2.6.1
+itsdangerous==2.2.0
+Jinja2==3.1.4
+MarkupSafe==2.1.5
