@@ -4,6 +4,7 @@ from flask_cors import CORS
 from pymongo import MongoClient
 from dotenv import load_dotenv
 from bson import json_util  # MongoDB'nin BSON formatını JSON'a çevirmek için çok önemli!
+from datetime import datetime, timedelta, timezone
 
 # .env dosyasındaki ortam değişkenlerini yükle
 load_dotenv()
@@ -52,72 +53,105 @@ def get_latest_price(game_id):
             return jsonify({"error": "Bu oyun için fiyat bilgisi bulunamadı."}), 404
 
         return json_util.dumps(latest_price_doc), 200, {'Content-Type': 'application/json'}
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/games/discounted", methods=["GET"])
 def get_discounted_games():
     """
-    Fiyatı son kayıtta bir öncekine göre düşmüş olan oyunları bulur.
-    Bu işlem tüm veritabanını taradığı için biraz yavaş olabilir.
+    Fiyatı düşmüş ve indirimi son 7 gün içinde başlamış oyunları bulur.
+    Ayrıca indirimin başlangıç tarihini ve kaç gündür devam ettiğini de döndürür.
     """
     try:
-        # Pipeline, MongoDB'de karmaşık sorgular ve veri işlemleri yapmak için kullanılır.
-        # Bu pipeline, her bir oyunun son iki fiyat kaydını alıp karşılaştırır.
+        # Son 7 günün başlangıç zamanını hesapla
+        seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+
+        # Agregation Pipeline ile karmaşık sorgu
         pipeline = [
-            # 1. Adım: Tüm fiyat kayıtlarını tarihe göre tersten sırala.
-            {
-                "$sort": {"snapshotDate": -1}
-            },
-            # 2. Adım: Her bir 'gameId' için fiyat kayıtlarını grupla.
+            # 1. Adım: Tüm fiyat kayıtlarını tarihe göre tersten sırala
+            {"$sort": {"snapshotDate": -1}},
+            # 2. Adım: Her oyunun fiyat geçmişini grupla
             {
                 "$group": {
-                    "_id": "$gameId",  # Oyun ID'sine göre grupla
-                    "price_history": {"$push": "$$ROOT"}  # O gruba ait tüm kayıtları bir diziye ekle
+                    "_id": "$gameId",
+                    "history": {"$push": "$$ROOT"}
                 }
             },
-            # 3. Adım: Her gruptan sadece ilk iki (en yeni) kaydı al.
+            # 3. Adım: 'games' koleksiyonu ile birleştirerek oyun detaylarını al
+            {
+                "$lookup": {
+                    "from": "games",
+                    "localField": "_id",
+                    "foreignField": "_id",
+                    "as": "game_details"
+                }
+            },
+            # 4. Adım: Oyun detayı olmayanları (eşleşmeyenleri) filtrele
+            {
+                "$match": {"game_details": {"$ne": []}}
+            },
+            # 5. Adım: Gerekli alanları yeniden yapılandır
             {
                 "$project": {
-                    "price_history": {"$slice": ["$price_history", 2]}
-                }
-            },
-            # 4. Adım: Sadece iki fiyat kaydı olanları filtrele.
-            {
-                "$match": {
-                    "price_history.1": {"$exists": True}
+                    "gameId": "$_id",
+                    "game_details": {"$arrayElemAt": ["$game_details", 0]},
+                    "history": 1
                 }
             }
         ]
 
-        # Yukarıdaki pipeline'ı çalıştır ve sonuçları al
-        potential_discounts = list(price_history_collection.aggregate(pipeline))
+        all_games_with_history = list(price_history_collection.aggregate(pipeline))
 
-        discounted_game_ids = set()
+        discounted_games_with_info = []
 
-        for item in potential_discounts:
-            # item['price_history'][0] -> en son fiyat
-            # item['price_history'][1] -> bir önceki fiyat
-            latest_record = item['price_history'][0]
-            previous_record = item['price_history'][1]
+        for game_data in all_games_with_history:
+            history = game_data.get('history', [])
 
-            # Fiyatları karşılaştırmak için hazırlık (ilk sürümü baz alıyoruz)
-            try:
-                # Fiyat metnini temizleyip sayıya dönüştür. 'Ücretsiz', 'Dahil' gibi metinleri atlar.
-                latest_price = float(latest_record['editions'][0]['price'].replace(',', '.').strip())
-                previous_price = float(previous_record['editions'][0]['price'].replace(',', '.').strip())
+            # İndirimin ne zaman başladığını ve güncel fiyatı bul
+            discount_start_date = None
+            latest_price = None
+            is_on_discount = False
 
-                # Eğer son fiyat, bir önceki fiyattan düşükse, bu bir indirimdir.
-                if latest_price < previous_price:
-                    discounted_game_ids.add(latest_record['gameId'])
+            # Fiyat geçmişini eskiden yeniye doğru tara
+            for i in range(len(history) - 1, 0, -1):
+                current_record = history[i]
+                next_record = history[i - 1]  # Daha yeni kayıt
 
-            except (ValueError, IndexError, KeyError):
-                # Fiyat sayıya çevrilemiyorsa, 'editions' listesi boşsa veya 'price' anahtarı yoksa devam et.
-                continue
+                try:
+                    current_price = float(current_record['editions'][0]['price'].replace(',', '.').strip())
+                    next_price = float(next_record['editions'][0]['price'].replace(',', '.').strip())
 
-        # İndirimli olarak bulduğumuz ID'lere sahip oyunların tam bilgilerini 'games' koleksiyonundan çek.
-        # '$in' operatörü, listedeki herhangi bir ID ile eşleşen tüm dokümanları bulur.
-        discounted_games_docs = list(games_collection.find({"_id": {"$in": list(discounted_game_ids)}}))
+                    # Fiyat düşüşü tespit edildi
+                    if next_price < current_price:
+                        # Eğer bu düşüş zaten devam eden bir indirimin parçası değilse
+                        if not is_on_discount:
+                            is_on_discount = True
+                            # İndirimin başlangıç tarihi, fiyatın düştüğü YENİ kaydın tarihidir.
+                            discount_start_date = datetime.fromisoformat(
+                                next_record['snapshotDate'].replace('Z', '+00:00'))
 
-        return json_util.dumps(discounted_games_docs), 200, {'Content-Type': 'application/json'}
+                    # Fiyat tekrar yükseldiyse veya aynı kaldıysa, indirim bitti.
+                    elif next_price >= current_price:
+                        is_on_discount = False
+                        discount_start_date = None
+
+                except (ValueError, IndexError, KeyError):
+                    continue
+
+            # Eğer oyun hala indirimdeyse ve indirim son 7 gün içinde başladıysa
+            if is_on_discount and discount_start_date and discount_start_date >= seven_days_ago:
+                days_on_discount = (datetime.now(timezone.utc) - discount_start_date).days
+
+                # API yanıtı için oyun objesini hazırla
+                game_info = game_data['game_details']
+                game_info['discountInfo'] = {
+                    "discountStartDate": discount_start_date.isoformat(),
+                    "daysOnDiscount": days_on_discount
+                }
+                discounted_games_with_info.append(game_info)
+
+        return json_util.dumps(discounted_games_with_info), 200, {'Content-Type': 'application/json'}
 
     except Exception as e:
         return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
