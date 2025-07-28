@@ -56,6 +56,76 @@ def get_latest_price(game_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/games/discounted", methods=["GET"])
+def get_discounted_games():
+    """
+    Fiyatı son kayıtta bir öncekine göre düşmüş olan oyunları bulur.
+    Bu işlem tüm veritabanını taradığı için biraz yavaş olabilir.
+    """
+    try:
+        # Pipeline, MongoDB'de karmaşık sorgular ve veri işlemleri yapmak için kullanılır.
+        # Bu pipeline, her bir oyunun son iki fiyat kaydını alıp karşılaştırır.
+        pipeline = [
+            # 1. Adım: Tüm fiyat kayıtlarını tarihe göre tersten sırala.
+            {
+                "$sort": {"snapshotDate": -1}
+            },
+            # 2. Adım: Her bir 'gameId' için fiyat kayıtlarını grupla.
+            {
+                "$group": {
+                    "_id": "$gameId",  # Oyun ID'sine göre grupla
+                    "price_history": {"$push": "$$ROOT"}  # O gruba ait tüm kayıtları bir diziye ekle
+                }
+            },
+            # 3. Adım: Her gruptan sadece ilk iki (en yeni) kaydı al.
+            {
+                "$project": {
+                    "price_history": {"$slice": ["$price_history", 2]}
+                }
+            },
+            # 4. Adım: Sadece iki fiyat kaydı olanları filtrele.
+            {
+                "$match": {
+                    "price_history.1": {"$exists": True}
+                }
+            }
+        ]
+
+        # Yukarıdaki pipeline'ı çalıştır ve sonuçları al
+        potential_discounts = list(price_history_collection.aggregate(pipeline))
+
+        discounted_game_ids = set()
+
+        for item in potential_discounts:
+            # item['price_history'][0] -> en son fiyat
+            # item['price_history'][1] -> bir önceki fiyat
+            latest_record = item['price_history'][0]
+            previous_record = item['price_history'][1]
+
+            # Fiyatları karşılaştırmak için hazırlık (ilk sürümü baz alıyoruz)
+            try:
+                # Fiyat metnini temizleyip sayıya dönüştür. 'Ücretsiz', 'Dahil' gibi metinleri atlar.
+                latest_price = float(latest_record['editions'][0]['price'].replace(',', '.').strip())
+                previous_price = float(previous_record['editions'][0]['price'].replace(',', '.').strip())
+
+                # Eğer son fiyat, bir önceki fiyattan düşükse, bu bir indirimdir.
+                if latest_price < previous_price:
+                    discounted_game_ids.add(latest_record['gameId'])
+
+            except (ValueError, IndexError, KeyError):
+                # Fiyat sayıya çevrilemiyorsa, 'editions' listesi boşsa veya 'price' anahtarı yoksa devam et.
+                continue
+
+        # İndirimli olarak bulduğumuz ID'lere sahip oyunların tam bilgilerini 'games' koleksiyonundan çek.
+        # '$in' operatörü, listedeki herhangi bir ID ile eşleşen tüm dokümanları bulur.
+        discounted_games_docs = list(games_collection.find({"_id": {"$in": list(discounted_game_ids)}}))
+
+        return json_util.dumps(discounted_games_docs), 200, {'Content-Type': 'application/json'}
+
+    except Exception as e:
+        return jsonify({"error": f"An unexpected error occurred: {str(e)}"}), 500
+
+
 # Bu blok, kodu doğrudan 'python app.py' ile çalıştırdığımızda
 # Flask'ın test sunucusunu başlatır.
 if __name__ == "__main__":
