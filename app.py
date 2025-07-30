@@ -79,9 +79,24 @@ def get_game_details(game_id):
 
 @app.route('/games/<string:game_id>/price-history', methods=['GET'])
 def get_price_history(game_id):
+    """
+    Belirli bir oyunun tüm fiyat geçmişini döndürür.
+    ObjectId'leri string'e çevirerek JSON uyumluluğunu garanti eder.
+    """
     try:
-        history = list(price_history_collection.find({'gameId': game_id}).sort('snapshotDate', DESCENDING))
-        return jsonify(history)
+        history_cursor = price_history_collection.find({'gameId': game_id}).sort('snapshotDate', DESCENDING)
+        
+        # --- EN ÖNEMLİ DEĞİŞİKLİK BURADA ---
+        # bson.json_util, MongoDB'ye özgü tipleri (ObjectId, Date) 
+        # doğru JSON formatına çevirmek için en güvenli yoldur.
+        # 1. Veriyi JSON metnine çevirir (ObjectId'ler düzgün bir şekilde işlenir).
+        history_json = json_util.dumps(list(history_cursor))
+        # 2. Bu güvenli JSON metnini tekrar Python nesnesine çevirir.
+        history_list = json.loads(history_json)
+        # --- DEĞİŞİKLİK SONU ---
+        
+        return jsonify(history_list)
+        
     except Exception as e:
         return jsonify({"error": "Fiyat geçmişi alınırken bir hata oluştu.", "details": str(e)}), 500
 
