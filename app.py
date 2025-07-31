@@ -83,24 +83,25 @@ def get_game_details(game_id):
 def get_price_history(game_id):
     """
     Belirli bir oyunun tüm fiyat geçmişini döndürür.
-    ObjectId'leri string'e çevirerek JSON uyumluluğunu garanti eder.
+    bson.json_util kullanarak ObjectId ve Date gibi tipleri doğru JSON formatına çevirir.
     """
     try:
         history_cursor = price_history_collection.find({'gameId': game_id}).sort('snapshotDate', DESCENDING)
+        history_list = list(history_cursor)
         
-        # --- EN ÖNEMLİ DEĞİŞİKLİK BURADA ---
-        # bson.json_util, MongoDB'ye özgü tipleri (ObjectId, Date) 
-        # doğru JSON formatına çevirmek için en güvenli yoldur.
-        # 1. Veriyi JSON metnine çevirir (ObjectId'ler düzgün bir şekilde işlenir).
-        history_json = json_util.dumps(list(history_cursor))
-        # 2. Bu güvenli JSON metnini tekrar Python nesnesine çevirir.
-        history_list = json.loads(history_json)
-        # --- DEĞİŞİKLİK SONU ---
-        
-        return jsonify(history_list)
+        # json_util.dumps, MongoDB nesnelerini JSON'a doğru şekilde serileştirir.
+        # Flask'in jsonify'ı yerine doğrudan bir Response nesnesi döndürmek daha güvenilirdir.
+        response = app.response_class(
+            response=json_util.dumps(history_list),
+            status=200,
+            mimetype='application/json'
+        )
+        return response
         
     except Exception as e:
-        return jsonify({"error": "Fiyat geçmişi alınırken bir hata oluştu.", "details": str(e)}), 500
+        # Hatanın detayını loglamak, sunucu tarafında sorunu anlamak için önemlidir.
+        print(f"HATA - get_price_history (gameId: {game_id}): {e}")
+        return jsonify({"error": "Fiyat geçmişi alınırken bir sunucu hatası oluştu.", "details": str(e)}), 500
 
 
 # --- YENİ VE GELİŞTİRİLMİŞ İNDİRİMLER ENDPOINT'İ ---
