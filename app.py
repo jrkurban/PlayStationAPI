@@ -1,6 +1,8 @@
 # app.py - Geliştirilmiş İndirim Mantığı ile
 import os
 from flask import Flask, jsonify, request
+import json
+from bson import json_util
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
